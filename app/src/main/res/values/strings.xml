@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">AutoTethering</string>
+    <string name="service_label">Автомобильная точка доступа</string>
+    <string name="service_description">Автомобильная точка доступа - описание</string>
+</resources>
