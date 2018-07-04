@@ -15,95 +15,26 @@ import android.os.Handler;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
-import java.io.InputStream;
 import java.lang.reflect.Method;
-import java.util.Collections;
 import java.util.List;
 
 public class AutoTetheringService  extends AccessibilityService {
 
-    public int WIFI_AP_STATE_ENABLED = 13;
-    public int WIFI_AP_STATE_FAILED = 14;
+    private int WIFI_AP_STATE_DISABLED = 11;
+    private int WIFI_AP_STATE_ENABLED = 13;
+    private int WIFI_AP_STATE_FAILED = 14;
 
     private String WIFI_AP_STATE_CHANGED_ACTION = "android.net.wifi.WIFI_AP_STATE_CHANGED";
     private String WIFI_HOTSPOT_CLIENTS_CHANGED_ACTION = "android.net.wifi.WIFI_HOTSPOT_CLIENTS_CHANGED";
+
+    private long UPDATE_STATE_INTERVAL_MS = 10000;
+    private long WAIT_FOR_CONNECTION_MS = 60000;
     private String CAR_WIFI_BEACON_NAME = "mazda6-wifi-beacon";
 
     private Context context;
     private WifiManager wifiManager;
-    private AudioManager audioManager;
-    private boolean isRunning = false;
-    private boolean somebodyThere = false;
-
-    private boolean isConnectedToBeacon() {
-        if (!wifiManager.isWifiEnabled()) return false;
-        WifiInfo info = wifiManager.getConnectionInfo();
-        return info.getSSID().replaceAll("^\"|\"$", "").equals(CAR_WIFI_BEACON_NAME);
-    }
-
-    private void enableAccessPoint() {
-        try {
-            wifiManager.setWifiEnabled(false);
-            Method method = wifiManager.getClass().getMethod("setWifiApEnabled", WifiConfiguration.class, boolean.class);
-            method.invoke(wifiManager, null, true);
-        } catch (Exception e) {
-        }
-    }
-
-    private int getHotSpotState() {
-        try {
-            Method method = wifiManager.getClass().getMethod("getWifiApState");
-            return ((Integer) method.invoke(wifiManager));
-        } catch (Exception e) {}
-        return WIFI_AP_STATE_FAILED;
-    }
-
-    private void disableAccessPoint() {
-        try {
-            Method method = wifiManager.getClass().getMethod("setWifiApEnabled", WifiConfiguration.class, boolean.class);
-            method.invoke(wifiManager, null, false);
-            wifiManager.setWifiEnabled(true);
-        } catch (Exception e) {
-        }
-    }
-
-    private List getHotspotClients() {
-        try {
-            Method getHotspotClients = wifiManager.getClass().getMethod("getHotspotClients");
-            return (List) getHotspotClients.invoke(wifiManager);
-        } catch (Exception e) {}
-        return Collections.emptyList();
-    }
-
-    private boolean doPing(String ipAddress) {
-        Runtime runtime = Runtime.getRuntime();
-        try {
-            return runtime.exec("/system/bin/ping -c 1 -W 10 " + ipAddress).waitFor() == 0;
-        } catch (Exception e) {
-            Log.d("TEMP", e.toString());
-        }
-        return false;
-    }
-
-    private boolean isHotSpotClientsAlive(List hotspotClients) {
-        if (!hotspotClients.isEmpty()) {
-            try {
-                Method getClientIp = wifiManager.getClass().getMethod("getClientIp", String.class);
-                for (Object client : hotspotClients) {
-                    String macAddress = (String) client.getClass().getField("deviceAddress").get(client);
-                    //macAddress.equals(HEAD_UNIT_HW_ADDRESS)
-                    String ipAddress = (String) getClientIp.invoke(wifiManager, macAddress);
-                    if (doPing(ipAddress)) return true;
-                }
-            } catch (Exception e) {
-            }
-        }
-        return false;
-    }
-
-    private void doLog(String message) {
-        Log.d("TEMP", message);
-    }
+    private Class wifiManagerClass = WifiManager.class;
+    private boolean isServiceRunning = false;
 
     private void playSound(int sound) {
         AssetFileDescriptor afd = context.getResources().openRawResourceFd(sound);
@@ -117,51 +48,102 @@ public class AutoTetheringService  extends AccessibilityService {
         player.start();
     }
 
-    Runnable myRunnable = new Runnable() {
+    private boolean isConnectedToBeacon() {
+        if (!wifiManager.isWifiEnabled()) return false;
+        WifiInfo info = wifiManager.getConnectionInfo();
+        return info.getSSID().replaceAll("^\"|\"$", "").equals(CAR_WIFI_BEACON_NAME);
+    }
 
-        private Handler myHandler = new Handler();
+    private void enableAP() {
+        try {
+            wifiManager.setWifiEnabled(false);
+            Method method = wifiManagerClass.getMethod("setWifiApEnabled", WifiConfiguration.class, boolean.class);
+            method.invoke(wifiManager, null, true);
+        } catch (Exception e) {
+        }
+    }
+
+    private boolean checkIfAPHasConnections(boolean checkIfReachable) {
+        if (wifiManager.isWifiEnabled()) return false;
+        try {
+            Method getAPState = wifiManagerClass.getMethod("getWifiApState");
+            if ((Integer)getAPState.invoke(wifiManager) != WIFI_AP_STATE_ENABLED) return false;
+            Method getHotspotClients = wifiManagerClass.getMethod("getHotspotClients");
+            List hotspotClients = (List)getHotspotClients.invoke(wifiManager);
+            if (hotspotClients.isEmpty() || !checkIfReachable) return !hotspotClients.isEmpty();
+            Runtime runtime = Runtime.getRuntime();
+            Method getClientIp = wifiManagerClass.getMethod("getClientIp", String.class);
+            for (Object client : hotspotClients) {
+                String macAddress = (String)client.getClass().getField("deviceAddress").get(client);
+                String ipAddress = (String)getClientIp.invoke(wifiManager, macAddress);
+                if (runtime.exec("/system/bin/ping -c 1 -W 10 " + ipAddress).waitFor() == 0) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {}
+        return false;
+    }
+
+    private void disableAP() {
+        try {
+            Method getWifiApState = wifiManagerClass.getMethod("getWifiApState");
+            Method setWifiApEnabled = wifiManagerClass.getMethod("setWifiApEnabled", WifiConfiguration.class, boolean.class);
+            for (;;) {
+                setWifiApEnabled.invoke(wifiManager, null, false);
+                int apState = (Integer)getWifiApState.invoke(wifiManager);
+                if (apState == WIFI_AP_STATE_DISABLED || apState == WIFI_AP_STATE_FAILED) {
+                    wifiManager.setWifiEnabled(true);
+                    return;
+                }
+            }
+        } catch (Exception e) {}
+    }
+
+    private void doLog(String message) {
+        Log.d("TEMP", message);
+    }
+
+
+    Runnable updateState = new Runnable() {
+
+        private Handler handler = new Handler();
         private long enableHotSpotTime = 0;
+        private boolean isServing = false;
 
         @Override
         public void run() {
 
-            myHandler.removeCallbacksAndMessages(null);
-            if (!isRunning) return;
+            handler.removeCallbacksAndMessages(null);
+            if (!isServiceRunning) return;
 
-            List hotSpotClients = getHotspotClients();
-
-            if (somebodyThere) {
-
-                if (hotSpotClients.isEmpty() ||
-                    wifiManager.isWifiEnabled() ||
-                    getHotSpotState() != WIFI_AP_STATE_ENABLED ||
-                    !isHotSpotClientsAlive(hotSpotClients)) {
-                    somebodyThere = false;
-                    disableAccessPoint();
+            if (isServing) {
+                if (!checkIfAPHasConnections(true)) {
+                    isServing = false;
+                    disableAP();
                     playSound(R.raw.contactoff);
                 } else {
-                    myHandler.postDelayed(this, 10000);
+                    handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
                 }
             }
 
-            else if (!hotSpotClients.isEmpty()) {
-                somebodyThere = true;
+            else if (checkIfAPHasConnections(false)) {
+                isServing = true;
                 playSound(R.raw.contacton);
-                myHandler.postDelayed(this, 10000);
+                handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
             }
 
             else if (isConnectedToBeacon()) {
-                enableAccessPoint();
+                enableAP();
                 enableHotSpotTime = System.currentTimeMillis();
-                myHandler.postDelayed(this, 10000);
+                handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
             }
 
             else if (enableHotSpotTime != 0) {
-                if ((System.currentTimeMillis() - enableHotSpotTime) > 60000) {
+                if ((System.currentTimeMillis() - enableHotSpotTime) > WAIT_FOR_CONNECTION_MS) {
                     enableHotSpotTime = 0;
-                    disableAccessPoint();
+                    disableAP();
                 } else {
-                    myHandler.postDelayed(this, 10000);
+                    handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
                 }
             }
 
@@ -173,19 +155,17 @@ public class AutoTetheringService  extends AccessibilityService {
     private BroadcastReceiver wifiReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            myRunnable.run();
+            updateState.run();
         }
     };
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
-        if (!isRunning) {
-            isRunning = true;
+        if (!isServiceRunning) {
+            isServiceRunning = true;
             context = getApplicationContext();
-            wifiManager = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
-            audioManager = (AudioManager)context.getSystemService(Context.AUDIO_SERVICE);
-
+            wifiManager = (WifiManager)context.getSystemService(Context.WIFI_SERVICE);
 
             List<WifiConfiguration> wifiNetworks = wifiManager.getConfiguredNetworks();
             if (wifiNetworks != null) for (WifiConfiguration network : wifiNetworks) {
@@ -223,9 +203,9 @@ public class AutoTetheringService  extends AccessibilityService {
     }
 
     private void doCleanup() {
-        if (isRunning) {
+        if (isServiceRunning) {
             context.unregisterReceiver(wifiReceiver);
-            isRunning = false;
+            isServiceRunning = false;
         }
     }
 
