@@ -31,6 +31,8 @@ public class AutoTetheringService  extends AccessibilityService {
     private WifiManager wifiManager;
     private Class wifiManagerClass = WifiManager.class;
     private boolean isServiceRunning = false;
+    private boolean isApHasClients = false;
+    private Handler checkForDisconnection = new Handler();
 
     private void playSound(int sound) {
         AssetFileDescriptor afd = context.getResources().openRawResourceFd(sound);
@@ -97,10 +99,6 @@ public class AutoTetheringService  extends AccessibilityService {
     private void doLog(String message) {
         Log.d("TEMP", message);
     }
-
-
-    private boolean isApHasClients = false;
-    private Handler checkForDisconnection = new Handler();
 
     private void updateClients(boolean checkDisconnectionsOnly) {
 
