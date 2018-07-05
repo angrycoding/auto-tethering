@@ -14,7 +14,6 @@ import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
-
 import java.lang.reflect.Method;
 import java.util.List;
 
@@ -26,9 +25,6 @@ public class AutoTetheringService  extends AccessibilityService {
 
     private String WIFI_AP_STATE_CHANGED_ACTION = "android.net.wifi.WIFI_AP_STATE_CHANGED";
     private String WIFI_HOTSPOT_CLIENTS_CHANGED_ACTION = "android.net.wifi.WIFI_HOTSPOT_CLIENTS_CHANGED";
-
-    private long UPDATE_STATE_INTERVAL_MS = 10000;
-    private long WAIT_FOR_CONNECTION_MS = 60000;
     private String CAR_WIFI_BEACON_NAME = "mazda6-wifi-beacon";
 
     private Context context;
@@ -57,13 +53,12 @@ public class AutoTetheringService  extends AccessibilityService {
     private void enableAP() {
         try {
             wifiManager.setWifiEnabled(false);
-            Method method = wifiManagerClass.getMethod("setWifiApEnabled", WifiConfiguration.class, boolean.class);
-            method.invoke(wifiManager, null, true);
-        } catch (Exception e) {
-        }
+            Method setWifiApEnabled = wifiManagerClass.getMethod("setWifiApEnabled", WifiConfiguration.class, boolean.class);
+            setWifiApEnabled.invoke(wifiManager, null, true);
+        } catch (Exception e) {}
     }
 
-    private boolean checkIfAPHasConnections(boolean checkIfReachable) {
+    private boolean apHasClients(boolean checkIfReachable) {
         if (wifiManager.isWifiEnabled()) return false;
         try {
             Method getAPState = wifiManagerClass.getMethod("getWifiApState");
@@ -104,58 +99,38 @@ public class AutoTetheringService  extends AccessibilityService {
     }
 
 
-    Runnable updateState = new Runnable() {
+    private boolean isApHasClients = false;
+    private Handler checkForDisconnection = new Handler();
 
-        private Handler handler = new Handler();
-        private long enableHotSpotTime = 0;
-        private boolean isServing = false;
+    private void updateClients(boolean checkDisconnectionsOnly) {
 
-        @Override
-        public void run() {
-
-            handler.removeCallbacksAndMessages(null);
-            if (!isServiceRunning) return;
-
-            if (isServing) {
-                if (!checkIfAPHasConnections(true)) {
-                    isServing = false;
-                    disableAP();
-                    playSound(R.raw.contactoff);
-                } else {
-                    handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
-                }
-            }
-
-            else if (checkIfAPHasConnections(false)) {
-                isServing = true;
-                playSound(R.raw.contacton);
-                handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
-            }
-
-            else if (isConnectedToBeacon()) {
-                enableAP();
-                enableHotSpotTime = System.currentTimeMillis();
-                handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
-            }
-
-            else if (enableHotSpotTime != 0) {
-                if ((System.currentTimeMillis() - enableHotSpotTime) > WAIT_FOR_CONNECTION_MS) {
-                    enableHotSpotTime = 0;
-                    disableAP();
-                } else {
-                    handler.postDelayed(this, UPDATE_STATE_INTERVAL_MS);
-                }
-            }
-
-
+        if (isApHasClients && !apHasClients(true)) {
+            isApHasClients = false;
+            playSound(R.raw.contactoff);
+            disableAP();
         }
 
-    };
+        else if (!checkDisconnectionsOnly && !isApHasClients && apHasClients(false)) {
+            isApHasClients = true;
+            playSound(R.raw.contacton);
+            checkForDisconnection.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    updateClients(true);
+                    if (isApHasClients) {
+                        checkForDisconnection.postDelayed(this, 5000);
+                    }
+                }
+            }, 5000);
+        }
+
+    }
 
     private BroadcastReceiver wifiReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            updateState.run();
+            updateClients(false);
+            if (isConnectedToBeacon()) enableAP();
         }
     };
 
@@ -210,8 +185,7 @@ public class AutoTetheringService  extends AccessibilityService {
     }
 
     @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {
-    }
+    public void onAccessibilityEvent(AccessibilityEvent event) {}
 
     @Override
     public void onInterrupt() {

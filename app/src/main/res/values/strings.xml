@@ -1,5 +1,11 @@
 <resources>
     <string name="app_name">AutoTethering</string>
     <string name="service_label">Автомобильная точка доступа</string>
-    <string name="service_description">Автомобильная точка доступа - описание</string>
+    <string name="service_description">
+        Автоматически включает раздачу мобильного интернета
+        через Wi-Fi точку доступа, когда определенная Wi-Fi
+        сеть становится доступной. Раздача автоматически
+        отключается, когда от точки доступа отключается
+        последний клиент.
+    </string>
 </resources>
